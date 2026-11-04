@@ -27,10 +27,10 @@ Garmin Connect 和 Apple 健康之间的数据流是**单向**的：Garmin 只�
 
 ```text
 体重秤 → ScaleMe App → Apple 健康 → iPhone 快捷指令
-  → iCloud Drive/WeightIn（一个 JSON 文件）
+  → iCloud Drive/WeightIn（一份 JSON 内容，扩展名通常是 .json 或 .txt）
   → Mac 常驻脚本（launchd，每 60 秒扫描一次）
   → 生成 FIT 体重文件 → 上传到 Garmin Connect
-  → 确认成功后删除源文件（删除会同步回 iCloud，手机上也消失）
+  → 上传调用成功返回后删除源文件（删除会同步回 iCloud，手机上也消失）
 ```
 
 ### 1. 同步体重（FIT 方式）
@@ -55,17 +55,20 @@ Garmin Connect 和 Apple 健康之间的数据流是**单向**的：Garmin 只�
 ### 4. 上传机制
 
 - 首选 garminconnect 库自带的 `upload_activity`。注意 0.3.20 的这个接口**只收文件路径**（字符串），不收字节流，而且要求文件带 FIT/TCX/GPX 后缀——所以 watcher 会先把 FIT 字节写成临时 `.fit` 文件再传，传完删除临时文件。
-- 备用路径：如果库的上传接口不可用，watcher 会用缓存的 access token 直接 POST 到 Garmin 的 upload-service 接口。两条路径传的是同一个 FIT 文件。
+- 备用路径：只有当客户端不存在 `upload_activity` 方法时，watcher 才会用缓存的 access token 直接 POST 到 Garmin 的 upload-service 接口。如果 `upload_activity` 调用本身抛异常，本轮按失败处理并保留源文件，不会自动切换备用路径。
 
-### 5. 去重：同一天只传一条
+### 5. 去重：同一天同一体重不重复上传
 
-- 按日期去重：同一天、体重差小于 0.05 kg 的文件视为同一条，重复文件**直接删除，不重复上传**。
+- 按日期去重：同一天、体重差小于 0.05 kg 的文件视为同一条，watcher 会尝试删除重复文件，不重复上传。
+- **同一天但体重不同会再次上传**，并覆盖账本中该日期的记录。因此这里不是“每天只传一条”，而是“每天同一体重只传一条”。
 - **去重依据是 Mac 本地的账本 `Logs/uploaded.json`，不是 Connect 里的内容**。所以即使你在 Connect 里手动删了某天的记录，账本里还记着的话，同一天的文件仍会被判为重复而删掉、不上传。想重测，必须连账本一起清掉。
 
-### 6. 只有确认成功才删源文件
+### 6. 上传返回后才删除源文件
 
-- 上传成功（服务器返回成功）后，watcher 才会删除 iCloud 里的源文件，并把这条记进账本。
-- 任何失败（网络、登录、服务器拒绝、文件格式不对）都会保留源文件、记一条 FAILED 日志，下一轮继续重试，数据不会丢。
+- watcher 调用上传接口，未抛异常就记入账本并删除源文件。
+- 当前代码没有解析 Garmin 返回中的 `detailedImportResult.failures` 字段；如果接口以普通响应返回处理失败，仍可能被当作成功。这是现有的可靠性缺口。
+- 网络、登录或上传调用抛异常、文件格式错误等情况都会保留源文件、记一条 FAILED 日志，下一轮继续重试，数据不会丢。
+- 如果上传成功后删除源文件失败（例如 iCloud 文件仍被系统锁定），账本已经写入；下一轮会按重复文件再次尝试删除，不会再次上传同体重记录。
 
 ### 7. 时间窗口：只在指定时段运行
 
@@ -77,7 +80,7 @@ Garmin Connect 和 Apple 健康之间的数据流是**单向**的：Garmin 只�
 ### 8. 文件同步保护
 
 - 只处理 `.json` 和 `.txt` 文件：新版 iOS 的“保存文件”动作对文本输入会**强制补 `.txt` 后缀**，即使子路径写的是 `.json`，所以两种后缀都要接受。
-- 跳过 `.icloud` 文件（还没从 iCloud 下载到本地的占位文件）。
+- 只处理文件名以 `.json` 或 `.txt` 结尾的文件；iCloud 的 `.icloud` 占位文件和其他扩展名会被跳过。
 - 文件修改时间不到 60 秒的跳过，等同步完成后再处理，避免读到一半的文件。
 
 ### 9. 体重解析容错
@@ -88,7 +91,7 @@ Garmin Connect 和 Apple 健康之间的数据流是**单向**的：Garmin 只�
 ### 10. 时间戳：真实时间或缺省 07:00
 
 - JSON 里如果有 `measured_at`（ISO 8601 时间，例如 `2026-11-04T07:00:00+08:00`），就用它作为称重时间；FIT 里存 UTC，Connect 按本地时区显示。
-- 如果没有 `measured_at`，缺省按当天 07:00（+08:00）计——这是按“早上称重”假设写的缺省值。所以如果你的快捷指令没发时间，Connect 里会显示 07:00，这不是上传失败。
+- 如果没有 `measured_at`，缺省按当天 07:00（+08:00）计——这是按“早上称重”假设写的缺省值。Connect 会再换算为你设备的本地时区显示，因此在中国时区通常显示 07:00，这不是上传失败。
 
 ### 11. 日志与状态文件
 
@@ -97,10 +100,10 @@ Garmin Connect 和 Apple 健康之间的数据流是**单向**的：Garmin 只�
 | 文件 | 内容 |
 | --- | --- |
 | `Logs/weighin.log` | watcher 的运行日志：uploaded / FAILED / deduped / watch dir not found |
-| `Logs/weighin.err` | launchd 的 stderr（脚本崩溃时的 traceback 在这里） |
+| `Logs/weighin.err` | launchd 的 stderr（按安装说明配置后，脚本崩溃时的 traceback 在这里） |
 | `Logs/uploaded.json` | 去重账本：每个日期传过的体重、上传时间、服务器返回 |
 
-launchd 的 stdout 指向 `/dev/null`（watcher 的日志是直接写文件的，不靠 stdout，所以不丢；手动跑脚本时终端照样能看到输出）。
+watcher 的日志是直接写文件的，不依赖 launchd 的 stdout；当前的安装示例把 stdout 指向 `/dev/null`，手动运行脚本时终端仍会输出日志。
 
 ## 需要什么：设备与条件
 
@@ -112,7 +115,7 @@ launchd 的 stdout 指向 `/dev/null`（watcher 的日志是直接写文件的�
 | iPhone | 能运行快捷指令，装有健康 App | 需要给快捷指令开健康读取权限 |
 | Mac | macOS，能常开或在设定时段内在线 | 跑 watcher 和 launchd 任务；本项目实测用 MacBook Pro（Apple Silicon） |
 | iCloud Drive | iPhone 和 Mac 登录**同一个 Apple ID**，并开启 iCloud Drive | 快捷指令和 Mac 靠它传文件 |
-| Garmin Connect 账号 | 国际区（connect.garmin.com） | 中国区（connectus.garmin.cn）未测试 |
+| Garmin Connect 账号 | 国际区（connect.garmin.com） | 中国区账号未测试 |
 | 网络 | Mac 能访问互联网和 Garmin 服务器 | 上传需要；iCloud 同步也需要 |
 
 ### 核心前提（缺一不可）
@@ -129,9 +132,12 @@ launchd 的 stdout 指向 `/dev/null`（watcher 的日志是直接写文件的�
 - **Python 包**：`garminconnect`（0.3.x，实测 0.3.20）、`curl_cffi`（garminconnect 的依赖，pip 会一并处理）。
 
 ```bash
-python3 -m venv ~/GarminWeightSync/venv
-~/GarminWeightSync/venv/bin/pip install garminconnect curl_cffi
+cd ~/GarminWeightSync
+python3 -m venv venv
+./venv/bin/pip install garminconnect curl_cffi
 ```
+
+上面的命令要在代码已经 clone 到 `~/GarminWeightSync` 后执行；clone 步骤见下方部署说明。
 
 - **目录结构**（以 `~/GarminWeightSync` 为例，你可以换成自己的路径，但 plist 里的路径必须同步改）：
 
@@ -143,7 +149,7 @@ python3 -m venv ~/GarminWeightSync/venv
 │   ├── fit_weight.py        # FIT 生成器（必须和 watcher.py 同目录）
 │   └── com.user.weighin.plist
 ├── docs/                    # 部署与快捷指令文档
-│   ├── README.md
+│   ├── index.md
 │   ├── mac-setup.md
 │   └── shortcut-icloud.md
 ├── Logs/                    # 运行期文件（自动生成，不和代码混放）
@@ -217,10 +223,11 @@ watcher 的关键配置都在 `watcher.py` 顶部和环境变量里：
 # 把仓库 scripts/ 目录下的 plist 复制到 launchd 目录
 cp ~/GarminWeightSync/scripts/com.user.weighin.plist ~/Library/LaunchAgents/
 
-# 编辑 ~/Library/LaunchAgents/com.user.weighin.plist，确认三件事：
+# 编辑 ~/Library/LaunchAgents/com.user.weighin.plist，确认四件事：
 #   1. ProgramArguments 里的 Python 路径和 watcher.py 路径是你机器上的真实路径
 #   2. WorkingDirectory 是 scripts/ 目录
 #   3. EnvironmentVariables 里的 GARMIN_EMAIL 换成你的 Garmin 邮箱
+#   4. StandardOutPath / StandardErrorPath 指向真实可写的日志目录
 #   （模板里是占位符 you@example.com，不改的话登录会失败）
 
 # 加载并验证
@@ -228,7 +235,9 @@ launchctl load ~/Library/LaunchAgents/com.user.weighin.plist
 launchctl list | grep weighin
 ```
 
-- `launchctl list` 应该显示 `- 0 com.user.weighin`。**如果显示 `- 78`，表示任务配置错误（EX_CONFIG），最常见的原因是 plist 里的路径和实际布局对不上**——例如 Python 或脚本路径写的是旧目录。先对着第 5 步的三件事逐项核对，改完后 `unload` 再 `load` 才会生效。
+模板里的 `ProgramArguments`、`WorkingDirectory` 和日志路径仍是旧目录，必须按上面的四项修改后再加载。
+
+- `launchctl list` 应该显示 `- 0 com.user.weighin`。**如果显示 `- 78`，表示任务配置错误（EX_CONFIG），最常见的原因是 plist 里的路径和实际布局对不上**——例如 Python 或脚本路径写的是旧目录。先对着第 5 步的四项配置逐项核对，改完后 `unload` 再 `load` 才会生效。
 - 此后每 60 秒扫描一次；`Logs/weighin.log` 里会出现运行记录。
 
 ### 第 6 步：建 iPhone 快捷指令
@@ -274,7 +283,7 @@ launchctl list | grep weighin
 ### 第 7 步：联调一次真实称重
 
 1. 实称一次（或触发一次快捷指令），确认 WeightIn 文件夹里出现当天的文件。
-2. 等 1–2 分钟（iCloud 同步 + 60 秒文件龄 + 60 秒扫描周期）。
+2. 在 `ACTIVE_WINDOWS` 内等 1–2 分钟（iCloud 同步 + 60 秒文件龄 + 60 秒扫描周期）；窗口外需要等到下一处理时段。
 3. 查三处：
    - Garmin Connect → 健康统计 → 体重，出现新记录；
    - `Logs/weighin.log` 里出现 `uploaded …; source file deleted`；
@@ -315,7 +324,7 @@ launchctl list | grep weighin
 | --- | --- | --- |
 | `date` | 是 | `YYYY-MM-DD` 格式的日期 |
 | `weight_kg` | 是 | 体重，数字或带单位的字符串（例如 `"55.6 kg"` 也能解析） |
-| `measured_at` | 否 | ISO 8601 时间；缺省按当天 07:00（+08:00）计 |
+| `measured_at` | 否 | ISO 8601 时间；缺省按当天 07:00（+08:00）计，未带时区时按 UTC 处理 |
 
 校验规则：日期必须是 10 位 `YYYY-MM-DD`，体重必须在 20–300 kg 之间，否则记 FAILED 并保留文件。
 
@@ -332,7 +341,7 @@ launchctl list | grep weighin
 │   ├── login_once.py          # 一次性 Garmin 登录（种子 token）
 │   └── com.user.weighin.plist # launchd 任务模板（部署前修改路径和邮箱）
 ├── docs/
-│   ├── README.md              # 文档索引
+│   ├── index.md               # 文档索引
 │   ├── mac-setup.md           # Mac 端部署与排错（以此为准）
 │   └── shortcut-icloud.md     # iPhone 快捷指令说明
 ├── Logs/                      # 运行期文件（本地生成，不提交）
@@ -345,7 +354,7 @@ launchctl list | grep weighin
 
 - **密码永不存盘**：密码只在 `login_once.py` 运行时通过 getpass 输入一次，不写入任何文件、日志或代码。不要把密码写进 plist、脚本或环境变量文件。
 - **Token 文件权限**：`~/.garminconnect/garmin_tokens.json` 由库以 0600 权限保存（仅本人可读写）。不要把它发给别人或提交到公开仓库。
-- **数据去向**：体重数据只从你的 iPhone 经 iCloud 到你的 Mac，再由 Mac 直接上传到 Garmin，不经过任何第三方服务器。本项目没有服务端组件（已废弃的 Cloudflare / InstaBox 路线除外，不要启用它们）。
+- **数据去向**：体重数据只从你的 iPhone 经 iCloud 到你的 Mac，再由 Mac 直接上传到 Garmin，不经过任何第三方服务器。本项目没有服务端组件。
 - **公开仓库前检查清单**（提交前逐项确认）：
   - [ ] 没有提交 `~/.garminconnect/` 下的任何文件
   - [ ] 没有提交 `Logs/`（里面有你的体重记录和上传返回）
@@ -390,15 +399,21 @@ launchctl print gui/$(id -u)/com.user.weighin | head -40
 3. **launchd 任务是不是好的**：`launchctl list | grep weighin`，状态应为 `0`；如果是 `78`，按上面那条排查。
 4. **文件是不是太新**：修改时间不到 60 秒的文件会跳过，等下一轮。
 
-### 删了 Connect 里的记录，重测还是不上传
+### 日志报 `[Errno 11] Resource deadlock avoided`
 
-**原因**：去重看的是本地账本 `Logs/uploaded.json`，不是 Connect 里的内容。删 Connect 记录不重置去重。
+**原因**：iCloud 文件仍被系统协调锁占用，watcher 在处理完成后无法删除源文件。若日志前面已经出现 `deduped` 或 `uploaded`，说明数据已处理，失败的是删除动作。
+
+**处理**：等待 iCloud 同步完成后再观察下一轮；确认当天记录已在账本或 Connect 中后，可以手动删除残留文件。若反复出现，可先关闭“优化 Mac 储存空间”，让文件常驻本地后再试。
+
+### 删了 Connect 里的同体重记录，重测还是不上传
+
+**原因**：去重看的是本地账本 `Logs/uploaded.json`，不是 Connect 里的内容。删 Connect 记录不重置去重；只有同一天、同体重（差值小于 0.05 kg）的文件才会被拦截，体重不同会正常再次上传。
 
 **修复**：重测前连账本一起清：删 Connect 记录 + 删 `Logs/uploaded.json`（它会在下次上传成功时自动重建）。注意：正常使用时不要删账本，否则同一天会重复上传。
 
-### Connect 里显示的时间是 07:00，和实际称重时间不一致
+### Connect 里显示的称重时间和实际称重时间不一致
 
-**原因**：快捷指令没发 `measured_at`，watcher 按缺省值当天 07:00 计。这不是上传失败。
+**原因**：快捷指令没发 `measured_at`，watcher 按缺省值当天 07:00（+08:00）计。Connect 按设备本地时区显示，所以在 +08 时区通常看到 07:00；这不是上传失败。
 
 **修复**：按[第 6 步“带上真实称重时间”](#可选带上真实称重时间)给快捷指令加一个格式化日期动作。
 
