@@ -137,11 +137,15 @@ python3 -m venv ~/GarminWeightSync/venv
 
 ```text
 ~/GarminWeightSync/
-├── scripts/                 # 代码（从仓库复制过来，见部署第 2 步）
+├── scripts/                 # 代码
 │   ├── watcher.py           # 常驻扫描脚本
 │   ├── login_once.py        # 一次性登录
-│   ├── login_widget.py      # 备用登录方式（widget 路线，当前 watcher 不用）
-│   └── fit_weight.py        # FIT 生成器（必须和 watcher.py 同目录）
+│   ├── fit_weight.py        # FIT 生成器（必须和 watcher.py 同目录）
+│   └── com.user.weighin.plist
+├── docs/                    # 部署与快捷指令文档
+│   ├── README.md
+│   ├── mac-setup.md
+│   └── shortcut-icloud.md
 ├── Logs/                    # 运行期文件（自动生成，不和代码混放）
 │   ├── weighin.log
 │   ├── weighin.err
@@ -149,12 +153,12 @@ python3 -m venv ~/GarminWeightSync/venv
 └── venv/                    # Python 虚拟环境
 
 # 另外还有一处不在项目目录内：
-#   ~/Library/LaunchAgents/com.user.weighin.plist   # launchd 任务（从仓库 mac/ 复制过去）
+#   ~/Library/LaunchAgents/com.user.weighin.plist   # launchd 任务（从仓库 scripts/ 复制过去）
 ```
 
 ## 部署步骤
 
-下面以 `~/GarminWeightSync` 为项目目录、`WeightIn` 为 iCloud 文件夹名为例。请把示例里的邮箱和路径换成你自己的。
+下面以 `~/GarminWeightSync` 为项目目录、`WeightIn` 为 iCloud 文件夹名为例。请把示例里的邮箱和路径换成你自己的。更精简的 Mac 端部署清单见 `docs/mac-setup.md`。
 
 ### 第 1 步：准备 iCloud 文件夹
 
@@ -173,17 +177,13 @@ ls ~/Library/Mobile\ Documents/com~apple~CloudDocs/WeightIn
 
 ```bash
 # 把仓库 clone 到本地（或下载 zip 解压），假设放在 ~/GarminWeightSync
+git clone https://github.com/elingsoft/GarminWeightSync4iCloud.git ~/GarminWeightSync
 cd ~/GarminWeightSync
 python3 -m venv venv
 ./venv/bin/pip install garminconnect curl_cffi
-
-# 部署用的脚本目录：把三个 .py 文件集中到 scripts/
-#（注意：fit_weight.py 在仓库根目录，watcher.py 和 login_once.py 在 mac/ 目录）
-mkdir -p scripts
-cp mac/watcher.py mac/login_once.py fit_weight.py scripts/
 ```
 
-`watcher.py` 会自动把自己所在的目录加入模块搜索路径，所以 `fit_weight.py` 必须和它放同一目录（`scripts/`），否则会报找不到模块。
+仓库已经包含 `scripts/` 目录，无需再手工复制脚本。`watcher.py` 会自动把自己所在的目录加入模块搜索路径，因此 `fit_weight.py` 必须留在同一目录，否则会报找不到模块。
 
 ### 第 3 步：一次性登录 Garmin（密码只输这一次，不存盘）
 
@@ -214,8 +214,8 @@ watcher 的关键配置都在 `watcher.py` 顶部和环境变量里：
 ### 第 5 步：安装 launchd 常驻任务
 
 ```bash
-# 把仓库 mac/ 目录下的 plist 复制到 launchd 目录
-cp ~/GarminWeightSync/mac/com.user.weighin.plist ~/Library/LaunchAgents/
+# 把仓库 scripts/ 目录下的 plist 复制到 launchd 目录
+cp ~/GarminWeightSync/scripts/com.user.weighin.plist ~/Library/LaunchAgents/
 
 # 编辑 ~/Library/LaunchAgents/com.user.weighin.plist，确认三件事：
 #   1. ProgramArguments 里的 Python 路径和 watcher.py 路径是你机器上的真实路径
@@ -323,22 +323,23 @@ launchctl list | grep weighin
 
 ```text
 .
-├── README.md                  # 本文件
-├── fit_weight.py              # FIT 体重文件生成器（纯标准库）
-├── mac/
+├── README.md                  # 项目总览
+├── AGENTS.md                  # 仓库协作与开发规则
+├── LICENSE                    # MIT 协议
+├── scripts/
 │   ├── watcher.py             # 常驻扫描脚本（核心）
+│   ├── fit_weight.py          # FIT 体重文件生成器（纯标准库）
 │   ├── login_once.py          # 一次性 Garmin 登录（种子 token）
-│   ├── login_widget.py        # 备用登录方式（widget 路线，当前 watcher 不用）
-│   ├── com.user.weighin.plist # launchd 任务模板（邮箱是占位符，部署时替换）
-│   ├── mac-setup.md           # Mac 端搭建笔记（较早版本，以本 README 为准）
-│   └── shortcut-icloud.md     # 快捷指令搭建笔记（较早版本，以本 README 为准）
-├── worker.js / wrangler.toml  # 已废弃：Cloudflare Workers 路线（部署未开始即取消，仅留档）
-├── receiver.py / weighin.service / garmin_upload.py
-│                              # 已废弃：InstaBox HTTP 接收路线（已取消，仅留档）
-└── scale-sync-mac.zip         # Mac 端文件打包（历史产物，部署请以仓库文件为准）
+│   └── com.user.weighin.plist # launchd 任务模板（部署前修改路径和邮箱）
+├── docs/
+│   ├── README.md              # 文档索引
+│   ├── mac-setup.md           # Mac 端部署与排错（以此为准）
+│   └── shortcut-icloud.md     # iPhone 快捷指令说明
+├── Logs/                      # 运行期文件（本地生成，不提交）
+└── venv/                      # Python 虚拟环境（本地生成，不提交）
 ```
 
-推荐部署只用 `fit_weight.py` + `mac/` 下的 `watcher.py`、`login_once.py`、`com.user.weighin.plist`。其余文件是探索过程中留下的已废弃路线，不属于推荐部署，阅读时请注意区分。
+推荐部署使用 `scripts/` 下的 `watcher.py`、`fit_weight.py`、`login_once.py` 和 `com.user.weighin.plist`。`scale-sync-mac.zip` 是本机历史归档，已被 `.gitignore` 排除，不作为部署来源。
 
 ## 安全与隐私
 
@@ -350,7 +351,7 @@ launchctl list | grep weighin
   - [ ] 没有提交 `Logs/`（里面有你的体重记录和上传返回）
   - [ ] plist 里的 `GARMIN_EMAIL` 是占位符，不是你的真实邮箱
   - [ ] 没有提交 `__pycache__`、`.pyc`、个人路径或真实体重数据
-  - [ ] 建议在仓库根目录加 `.gitignore`，至少包含：`Logs/`、`__pycache__/`、`*.pyc`、`.garminconnect/`
+  - [ ] 确认 `.gitignore` 已排除：`Logs/`、`venv/`、`__pycache__/`、`*.pyc`、`.garminconnect/`、`scale-sync-mac.zip`
 
 ## 常见问题与排错
 

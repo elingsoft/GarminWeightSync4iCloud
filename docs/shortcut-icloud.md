@@ -1,7 +1,7 @@
 # iPhone 快捷指令：称重后存文件到 iCloud（Mac 路线）
 
 前提：ScaleMe 已写体重到健康；iCloud Drive 里已有 `WeighIn` 文件夹；
-Mac 上 watcher 已常驻（见 mac-setup.md）。
+Mac 上 watcher 已常驻（见 [mac-setup.md](mac-setup.md)）。
 
 ## 触发（二选一）
 - 首选：打开 App → ScaleMe → 关闭时（需手机已解锁）。
@@ -23,4 +23,4 @@ Mac 上 watcher 已常驻（见 mac-setup.md）。
 1. 实称一次，确认 WeighIn 文件夹里出现当天的 JSON。
 2. 等 1–2 分钟：Mac 的 watcher 会处理；成功后源文件自动删除，
    Garmin Connect 体重页出现记录。
-3. 若文件一直没删：看 Mac 上 `~/Library/Logs/weighin.log` 的报错。
+3. 若文件一直没删：看 Mac 上 `~/GarminWeightSync/Logs/weighin.log` 的报错。
