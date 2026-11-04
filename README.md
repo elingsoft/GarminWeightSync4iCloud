@@ -190,6 +190,14 @@ To show the real measurement time instead of the 07:00 fallback, add:
 {"date":"2026-11-04","weight_kg":55.6,"measured_at":"2026-11-04T07:00:00+08:00"}
 ```
 
+#### Example Shortcut
+
+<p align="center">
+  <img src="docs/images/iphone-shortcut.jpg" alt="Example iPhone Shortcut for Garmin weight sync" width="360">
+</p>
+
+The screenshot shows the version that includes the optional `measured_at` field.
+
 #### Shortcut pitfalls
 
 - **iOS may append `.txt`**: when saving text, iOS may produce `weighin-2026-11-04.txt` even if the subpath ends in `.json`. The watcher accepts both extensions.
@@ -432,7 +440,9 @@ Check in order:
 ├── docs/
 │   ├── index.md               # Documentation index
 │   ├── mac-setup.md           # Mac setup and troubleshooting
-│   └── shortcut-icloud.md     # iPhone Shortcut guide
+│   ├── shortcut-icloud.md     # iPhone Shortcut guide
+│   └── images/
+│       └── iphone-shortcut.jpg
 ├── Logs/                      # Runtime files (local only, not committed)
 └── venv/                      # Python virtual environment (local only)
 ```

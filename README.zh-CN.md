@@ -191,6 +191,14 @@ launchctl list | grep weighin
 {"date":"2026-11-04","weight_kg":55.6,"measured_at":"2026-11-04T07:00:00+08:00"}
 ```
 
+#### 快捷指令示例
+
+<p align="center">
+  <img src="docs/images/iphone-shortcut.jpg" alt="Garmin 体重同步快捷指令示例" width="360">
+</p>
+
+截图展示的是包含可选 `measured_at` 字段的版本。
+
 #### iOS 快捷指令的几个坑（实测经验）
 
 - **保存文件会强制补 `.txt` 后缀**：新版 iOS 对文本输入保存时，即使子路径写的是 `.json`，实际落盘也常是 `weighin-2026-11-04.txt`。watcher 同时接受 `.json` 和 `.txt`，所以快捷指令侧不用改。
@@ -432,7 +440,9 @@ launchctl print gui/$(id -u)/com.user.weighin | head -40
 ├── docs/
 │   ├── index.md               # 文档索引
 │   ├── mac-setup.md           # Mac 端部署与排错（以此为准）
-│   └── shortcut-icloud.md     # iPhone 快捷指令说明
+│   ├── shortcut-icloud.md     # iPhone 快捷指令说明
+│   └── images/
+│       └── iphone-shortcut.jpg
 ├── Logs/                      # 运行期文件（本地生成，不提交）
 └── venv/                      # Python 虚拟环境（本地生成，不提交）
 ```
