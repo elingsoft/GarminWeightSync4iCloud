@@ -7,6 +7,7 @@
 - `Logs/` 保存运行日志和去重账本（`weighin.log`、`weighin.err`、`uploaded.json`），不得提交。
 - `venv/` 是本地虚拟环境，不得提交。
 - `docs/` 保存专项文档：Mac 端部署与排错以 `docs/mac-setup.md` 为准，快捷指令说明见 `docs/shortcut-icloud.md`。
+- `README.md` 是默认英文版，`README.zh-CN.md` 是中文版。任何 README 内容变更必须在同一次提交中同步更新两种语言，并互相保留语言切换链接。
 
 ## 构建、测试与开发命令
 

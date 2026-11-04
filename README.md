@@ -1,135 +1,54 @@
-# 体重秤 → Garmin Connect 自动同步
+# Weight Scale → Garmin Connect Auto Sync
 
-> 体重秤称完 → iPhone 快捷指令 → iCloud Drive → Mac 常驻脚本 → 生成 FIT → 上传到 Garmin Connect，全程不用动手。
+English | [简体中文](README.zh-CN.md)
 
-## 为什么需要这个项目
+> Weigh yourself → iPhone Shortcut → iCloud Drive → Mac watcher → FIT file → Garmin Connect. No manual steps required.
 
-Garmin Connect 和 Apple 健康之间的数据流是**单向**的：Garmin 只会把数据**写进**健康，从不从健康里**读回**体重。也就是说，即使体重秤的数据已经进了 Apple 健康，Garmin Connect 里也不会出现。
+## Contents
 
-本项目就是补上缺失的这一段：做一个“搬运工”，把健康里的最新体重以 FIT 文件的形式送进 Garmin Connect。
+- [Why this project](#why-this-project)
+- [Requirements](#requirements)
+- [Runtime environment](#runtime-environment)
+- [Setup](#setup)
+- [Configuration](#configuration)
+- [How it works](#how-it-works)
+- [Troubleshooting](#troubleshooting)
+- [Security and privacy](#security-and-privacy)
+- [Repository layout](#repository-layout)
+- [Known limitations](#known-limitations)
+- [License](#license)
 
-## 目录
+## Why this project
 
-- [功能详解](#功能详解)
-- [需要什么：设备与条件](#需要什么设备与条件)
-- [运行环境](#运行环境)
-- [部署步骤](#部署步骤)
-- [配置参考](#配置参考)
-- [仓库结构](#仓库结构)
-- [安全与隐私](#安全与隐私)
-- [常见问题与排错](#常见问题与排错)
-- [已知限制](#已知限制)
-- [开源协议](#开源协议)
+Garmin Connect does not automatically read weight back from Apple Health. A scale can write weight into Apple Health, but that weight does not automatically appear in Garmin Connect.
 
-## 功能详解
+This project fills that gap: it acts as a small data mover that takes the latest weight from Apple Health and uploads it to Garmin Connect as a FIT file.
 
-### 全链路
+## Requirements
 
-```text
-体重秤 → ScaleMe App → Apple 健康 → iPhone 快捷指令
-  → iCloud Drive/WeightIn（一份 JSON 内容，扩展名通常是 .json 或 .txt）
-  → Mac 常驻脚本（launchd，每 60 秒扫描一次）
-  → 生成 FIT 体重文件 → 上传到 Garmin Connect
-  → 上传调用成功返回后删除源文件（删除会同步回 iCloud，手机上也消失）
-```
+### Required
 
-### 1. 同步体重（FIT 方式）
-
-- 同步内容是**体重**。FIT 文件里可以带体脂、肌肉、骨量等字段，但本项目只传体重，原因见[已知限制](#已知限制)。
-- 体重文件由 `fit_weight.py` 生成：**只用 Python 标准库**，不依赖任何第三方 FIT 库。文件结构是 `file_id`（类型 = weight）+ 一条 `weight_scale` 消息（时间戳 + 体重），实测约 63 字节，体重精度 0.01 kg。
-- 生成的文件经过 fitparse 回读验证，并在真实账号上实测上传成功。
-
-### 2. 自动触发，不用动手
-
-- **手机端**：iPhone 快捷指令在 ScaleMe 关闭时自动触发（也可改用早上闹钟停止时触发），读取健康里最新一条体重，写成 JSON 存进 iCloud Drive。
-- **Mac 端**：launchd 任务每 60 秒唤醒一次 watcher，扫描 iCloud 文件夹，有新文件就处理。
-- 整个链路不需要人值守，称完关 App 就行。
-
-### 3. 登录与 Token 管理
-
-- Mac 上只需交互登录**一次**：运行 `login_once.py`，按提示输入 Garmin 密码（通过 getpass 输入，**密码不存盘**）；账号开了双重验证会再提示输入 6 位码。
-- 登录成功后，garminconnect 库把 token 缓存在 `~/.garminconnect/garmin_tokens.json`（文件权限 0600），watcher 此后上传不再需要密码，库会自动续期。
-- **关键点**：garminconnect 0.3.x 只有显式传了 `tokenstore` 参数才会存取 token。裸 `login()` 只在内存里成功，磁盘上什么都不留，watcher 随后会报 `Username and password are required`。本项目的两个脚本都显式传了 tokenstore。
-- Token 失效时 watcher 会报错并保留源文件，重跑一次 `login_once.py` 后，下一轮自动补传。
-
-### 4. 上传机制
-
-- 首选 garminconnect 库自带的 `upload_activity`。注意 0.3.20 的这个接口**只收文件路径**（字符串），不收字节流，而且要求文件带 FIT/TCX/GPX 后缀——所以 watcher 会先把 FIT 字节写成临时 `.fit` 文件再传，传完删除临时文件。
-- 备用路径：只有当客户端不存在 `upload_activity` 方法时，watcher 才会用缓存的 access token 直接 POST 到 Garmin 的 upload-service 接口。如果 `upload_activity` 调用本身抛异常，本轮按失败处理并保留源文件，不会自动切换备用路径。
-
-### 5. 去重：同一天同一体重不重复上传
-
-- 按日期去重：同一天、体重差小于 0.05 kg 的文件视为同一条，watcher 会尝试删除重复文件，不重复上传。
-- **同一天但体重不同会再次上传**，并覆盖账本中该日期的记录。因此这里不是“每天只传一条”，而是“每天同一体重只传一条”。
-- **去重依据是 Mac 本地的账本 `Logs/uploaded.json`，不是 Connect 里的内容**。所以即使你在 Connect 里手动删了某天的记录，账本里还记着的话，同一天的文件仍会被判为重复而删掉、不上传。想重测，必须连账本一起清掉。
-
-### 6. 上传返回后才删除源文件
-
-- watcher 调用上传接口，未抛异常就记入账本并删除源文件。
-- 当前代码没有解析 Garmin 返回中的 `detailedImportResult.failures` 字段；如果接口以普通响应返回处理失败，仍可能被当作成功。这是现有的可靠性缺口。
-- 网络、登录或上传调用抛异常、文件格式错误等情况都会保留源文件、记一条 FAILED 日志，下一轮继续重试，数据不会丢。
-- 如果上传成功后删除源文件失败（例如 iCloud 文件仍被系统锁定），账本已经写入；下一轮会按重复文件再次尝试删除，不会再次上传同体重记录。
-
-### 7. 时间窗口：只在指定时段运行
-
-- `ACTIVE_WINDOWS` 可以限定每天的处理时段，例如只在早上 5:00–9:00 和晚上 20:00–22:00 运行。
-- 窗口格式是（开始时，开始分，结束时，结束分），按 Mac 本地时间判断，结束时刻不含在内，支持跨午夜的窗口（例如 22:00–6:00）。
-- 设为 `None` 就是全天运行。窗口外到达的文件不会丢，只是延迟到下一个窗口处理。
-- launchd 本身仍每 60 秒唤醒一次，窗口判断在脚本开头做，窗口外直接退出，plist 不用改。
-
-### 8. 文件同步保护
-
-- 只处理 `.json` 和 `.txt` 文件：新版 iOS 的“保存文件”动作对文本输入会**强制补 `.txt` 后缀**，即使子路径写的是 `.json`，所以两种后缀都要接受。
-- 只处理文件名以 `.json` 或 `.txt` 结尾的文件；iCloud 的 `.icloud` 占位文件和其他扩展名会被跳过。
-- 文件修改时间不到 60 秒的跳过，等同步完成后再处理，避免读到一半的文件。
-
-### 9. 体重解析容错
-
-- 快捷指令把健康数值放进文本时，iOS 有时会带上单位（例如 `55.6 kg`、`55.6千克`），导致 JSON 里的体重不是纯数字。
-- watcher 会从字符串里提取第一个数字，所以快捷指令只需发 `date` + `weight_kg` 两个字段就能工作。
-
-### 10. 时间戳：真实时间或缺省 07:00
-
-- JSON 里如果有 `measured_at`（ISO 8601 时间，例如 `2026-11-04T07:00:00+08:00`），就用它作为称重时间；FIT 里存 UTC，Connect 按本地时区显示。
-- 如果没有 `measured_at`，缺省按当天 07:00（+08:00）计——这是按“早上称重”假设写的缺省值。Connect 会再换算为你设备的本地时区显示，因此在中国时区通常显示 07:00，这不是上传失败。
-
-### 11. 日志与状态文件
-
-运行期文件统一放在项目级 `Logs/` 子目录，**不和代码混放**：
-
-| 文件 | 内容 |
-| --- | --- |
-| `Logs/weighin.log` | watcher 的运行日志：uploaded / FAILED / deduped / watch dir not found |
-| `Logs/weighin.err` | launchd 的 stderr（按安装说明配置后，脚本崩溃时的 traceback 在这里） |
-| `Logs/uploaded.json` | 去重账本：每个日期传过的体重、上传时间、服务器返回 |
-
-watcher 的日志是直接写文件的，不依赖 launchd 的 stdout；当前的安装示例把 stdout 指向 `/dev/null`，手动运行脚本时终端仍会输出日志。
-
-## 需要什么：设备与条件
-
-### 必备
-
-| 项目 | 要求 | 说明 |
+| Item | Requirement | Notes |
 | --- | --- | --- |
-| 体重秤 | 能把体重写入 Apple 健康的秤或 App | 本项目实测用 **ScaleMe（观我）+ 蚂蚁阿福联名秤**；只要体重能进健康，其他秤/App 同理 |
-| iPhone | 能运行快捷指令，装有健康 App | 需要给快捷指令开健康读取权限 |
-| Mac | macOS，能常开或在设定时段内在线 | 跑 watcher 和 launchd 任务；本项目实测用 MacBook Pro（Apple Silicon） |
-| iCloud Drive | iPhone 和 Mac 登录**同一个 Apple ID**，并开启 iCloud Drive | 快捷指令和 Mac 靠它传文件 |
-| Garmin Connect 账号 | 国际区（connect.garmin.com） | 中国区账号未测试 |
-| 网络 | Mac 能访问互联网和 Garmin 服务器 | 上传需要；iCloud 同步也需要 |
+| Weight scale | A scale or app that writes weight to Apple Health | Tested with **ScaleMe (观我) + Ant Afu co-branded scale**. Any source that writes weight to Health should work. |
+| iPhone | Can run Shortcuts and has the Health app | The Shortcut needs permission to read Health data. |
+| Mac | macOS; can stay online, or at least be online during the active windows | Runs the watcher and the launchd job. Tested on an Apple Silicon MacBook Pro. |
+| iCloud Drive | iPhone and Mac signed in to the **same Apple ID** with iCloud Drive enabled | Used to transfer files between the Shortcut and the Mac. |
+| Garmin Connect account | International region (`connect.garmin.com`) | China-region accounts have not been tested. |
+| Network | The Mac can reach the internet and Garmin servers | Needed for uploads and iCloud synchronization. |
 
-### 核心前提（缺一不可）
+### Prerequisites
 
-1. **体重必须能进 Apple 健康**。这是整条链的起点：如果秤的 App 不写健康，快捷指令就读不到。
-2. **手机触发时必须已解锁**。健康数据在锁屏时读不到，所以“ScaleMe 关闭时触发”这个自动化要求触发那一刻手机是解锁状态。
-3. **Mac 和 iPhone 必须登录同一个 iCloud 账号**，否则 WeightIn 文件夹不会同步到 Mac 上。
-4. **Mac 必须在设定的时间窗口内处于开机在线状态**，否则文件会等到下一个窗口（或 Mac 开机后）才处理。
+1. **The scale must write weight into Apple Health.** This is the start of the chain; if the scale app does not write to Health, the Shortcut has nothing to read.
+2. **The iPhone must be unlocked when the Shortcut is triggered.** Health data is unavailable while the phone is locked.
+3. **The iPhone and Mac must use the same iCloud account**, otherwise the `WeightIn` folder will not sync to the Mac.
+4. **The Mac must be powered on and online during an active window.** Otherwise files wait until the next window or the next boot.
 
-## 运行环境
+## Runtime environment
 
-- **macOS**：近几年带 launchd 的版本均可（launchd 是 macOS 自带的常驻任务机制）。
-- **Python**：3.11 或更高版本（实测 3.13）。建议用 venv，与系统 Python 隔开。
-- **Python 包**：`garminconnect`（0.3.x，实测 0.3.20）、`curl_cffi`（garminconnect 的依赖，pip 会一并处理）。
+- **macOS**: any recent version with launchd.
+- **Python**: 3.11 or newer; tested with 3.13. A virtual environment is recommended.
+- **Python packages**: `garminconnect` (0.3.x; tested with 0.3.20) and `curl_cffi` (a garminconnect dependency, also installed explicitly here).
 
 ```bash
 cd ~/GarminWeightSync
@@ -137,238 +56,288 @@ python3 -m venv venv
 ./venv/bin/pip install garminconnect curl_cffi
 ```
 
-上面的命令要在代码已经 clone 到 `~/GarminWeightSync` 后执行；clone 步骤见下方部署说明。
+Run these commands after cloning the repository to `~/GarminWeightSync`; see the setup steps below.
 
-- **目录结构**（以 `~/GarminWeightSync` 为例，你可以换成自己的路径，但 plist 里的路径必须同步改）：
+- **Directory layout** (using `~/GarminWeightSync`; if you use a different path, update the plist too):
 
 ```text
 ~/GarminWeightSync/
-├── scripts/                 # 代码
-│   ├── watcher.py           # 常驻扫描脚本
-│   ├── login_once.py        # 一次性登录
-│   ├── fit_weight.py        # FIT 生成器（必须和 watcher.py 同目录）
+├── scripts/                 # source code
+│   ├── watcher.py           # watcher
+│   ├── login_once.py        # one-time login
+│   ├── fit_weight.py        # FIT generator (must stay next to watcher.py)
 │   └── com.user.weighin.plist
-├── docs/                    # 部署与快捷指令文档
+├── docs/                    # deployment and Shortcut documentation
 │   ├── index.md
 │   ├── mac-setup.md
 │   └── shortcut-icloud.md
-├── Logs/                    # 运行期文件（自动生成，不和代码混放）
+├── Logs/                    # runtime files (created automatically)
 │   ├── weighin.log
 │   ├── weighin.err
 │   └── uploaded.json
-└── venv/                    # Python 虚拟环境
+└── venv/                    # Python virtual environment
 
-# 另外还有一处不在项目目录内：
-#   ~/Library/LaunchAgents/com.user.weighin.plist   # launchd 任务（从仓库 scripts/ 复制过去）
+# One file lives outside the project directory:
+#   ~/Library/LaunchAgents/com.user.weighin.plist   # launchd job
 ```
 
-## 部署步骤
+## Setup
 
-下面以 `~/GarminWeightSync` 为项目目录、`WeightIn` 为 iCloud 文件夹名为例。请把示例里的邮箱和路径换成你自己的。更精简的 Mac 端部署清单见 `docs/mac-setup.md`。
+The examples use `~/GarminWeightSync` as the project directory and `WeightIn` as the iCloud folder. Replace the example email and paths with your own. A shorter Mac setup checklist is available in `docs/mac-setup.md`.
 
-### 第 1 步：准备 iCloud 文件夹
+### Step 1: Create the iCloud folder
 
-1. iPhone 上打开“文件”App → iCloud Drive，新建一个文件夹，名字必须是 **`WeightIn`**。
-   - 注意：名字不要带前导空格（例如 `" WeightIn"` 是另一个文件夹，Mac 上会找不到）。
-2. Mac 上确认系统设置 → iCloud → iCloud Drive 已打开。
-3. 等 Mac 上出现这个目录（和 iPhone 同一个 Apple ID 才会同步）：
+1. On iPhone, open Files → iCloud Drive and create a folder named exactly **`WeightIn`**.
+   - Do not add a leading space. `" WeightIn"` is a different folder and the Mac will not find it.
+2. On Mac, confirm that System Settings → Apple ID → iCloud Drive is enabled.
+3. Wait for the folder to appear on the Mac (same Apple ID required):
 
 ```bash
 ls ~/Library/Mobile\ Documents/com~apple~CloudDocs/WeightIn
 ```
 
-如果目录一直不出现，先在 iPhone 的文件 App 里往 WeightIn 存一个任意文件，确认同步通路是通的。
+If the folder does not appear, save any file into `WeightIn` from the iPhone Files app to verify that iCloud synchronization works.
 
-### 第 2 步：获取代码，建虚拟环境
+### Step 2: Get the code and create a virtual environment
 
 ```bash
-# 把仓库 clone 到本地（或下载 zip 解压），假设放在 ~/GarminWeightSync
+# Clone the repository (or download a source archive) to ~/GarminWeightSync
 git clone https://github.com/elingsoft/GarminWeightSync4iCloud.git ~/GarminWeightSync
 cd ~/GarminWeightSync
 python3 -m venv venv
 ./venv/bin/pip install garminconnect curl_cffi
 ```
 
-仓库已经包含 `scripts/` 目录，无需再手工复制脚本。`watcher.py` 会自动把自己所在的目录加入模块搜索路径，因此 `fit_weight.py` 必须留在同一目录，否则会报找不到模块。
+The repository already contains the `scripts/` directory, so no manual copying is needed. `watcher.py` adds its own directory to the module search path; `fit_weight.py` must remain in the same directory or the import will fail.
 
-### 第 3 步：一次性登录 Garmin（密码只输这一次，不存盘）
+### Step 3: Log in to Garmin once
 
 ```bash
 cd ~/GarminWeightSync/scripts
-GARMIN_EMAIL=你的Garmin邮箱 ~/GarminWeightSync/venv/bin/python login_once.py
+GARMIN_EMAIL=your-garmin-email ~/GarminWeightSync/venv/bin/python login_once.py
 ```
 
-- 按提示输入密码（getpass 输入，屏幕不回显，**不写入任何文件**）。
-- 账号开了双重验证，会再提示输入 6 位码。
-- 成功后显示 `Login OK, tokens cached`，token 已存到 `~/.garminconnect/garmin_tokens.json`（权限 0600）。
-- 此后 watcher 上传不再需要密码；token 由库自动续期。watcher 报错 token 失效时，重跑这一步即可，下一轮自动补传。
+- Enter the password through `getpass`; it is not echoed and is **not written to disk**.
+- If MFA is enabled, enter the one-time code when prompted.
+- On success, the script prints `Login OK, tokens cached`. Tokens are saved to `~/.garminconnect/garmin_tokens.json` with mode `0600`.
+- The watcher no longer needs the password and the library refreshes tokens automatically. If the token becomes invalid, rerun this step; the next round retries the upload.
 
-### 第 4 步：配置 watcher
+### Step 4: Configure the watcher
 
-watcher 的关键配置都在 `watcher.py` 顶部和环境变量里：
+The main watcher settings are at the top of `watcher.py` and in environment variables:
 
-| 配置 | 位置 | 缺省值 | 说明 |
+| Setting | Location | Default | Description |
 | --- | --- | --- | --- |
-| `GARMIN_EMAIL` | 环境变量（plist 里也要设） | 空 | 你的 Garmin 登录邮箱 |
-| `WEIGHIN_DIR` | 环境变量 | `~/Library/Mobile Documents/com~apple~CloudDocs/WeightIn` | 监听的 iCloud 文件夹 |
-| `ACTIVE_WINDOWS` | `watcher.py` 常量 | `[(5, 0, 9, 0), (20, 0, 22, 0)]` | 每天的处理时段；改回 `None` 则全天运行 |
-| `MIN_AGE_S` | `watcher.py` 常量 | `60` | 文件修改时间不到这么多秒就跳过（等同步完成） |
-| `DEDUP_TOL` | `watcher.py` 常量 | `0.05` | 同一天体重差小于这么多 kg 视为同一条 |
+| `GARMIN_EMAIL` | Environment variable (also set in the plist) | Empty | Garmin login email |
+| `WEIGHIN_DIR` | Environment variable | `~/Library/Mobile Documents/com~apple~CloudDocs/WeightIn` | Folder to watch |
+| `ACTIVE_WINDOWS` | Constant in `watcher.py` | `[(5, 0, 9, 0), (20, 0, 22, 0)]` | Processing windows; use `None` to run all day |
+| `MIN_AGE_S` | Constant in `watcher.py` | `60` | Skip files younger than this many seconds |
+| `DEDUP_TOL` | Constant in `watcher.py` | `0.05` | Duplicate tolerance in kg |
 
-改 `ACTIVE_WINDOWS` 时注意格式是（开始时，开始分，结束时，结束分），结束时刻不含在内；例如 `(5, 0, 9, 0)` 表示 5:00–9:00，9:00 整点已不在窗口内。
+Each window is `(start_hour, start_minute, end_hour, end_minute)`; the end time is exclusive. For example, `(5, 0, 9, 0)` covers 5:00–9:00, and 9:00 itself is outside the window.
 
-### 第 5 步：安装 launchd 常驻任务
+### Step 5: Install the launchd job
 
 ```bash
-# 把仓库 scripts/ 目录下的 plist 复制到 launchd 目录
+# Copy the plist from the repository's scripts/ directory
 cp ~/GarminWeightSync/scripts/com.user.weighin.plist ~/Library/LaunchAgents/
 
-# 编辑 ~/Library/LaunchAgents/com.user.weighin.plist，确认四件事：
-#   1. ProgramArguments 里的 Python 路径和 watcher.py 路径是你机器上的真实路径
-#   2. WorkingDirectory 是 scripts/ 目录
-#   3. EnvironmentVariables 里的 GARMIN_EMAIL 换成你的 Garmin 邮箱
-#   4. StandardOutPath / StandardErrorPath 指向真实可写的日志目录
-#   （模板里是占位符 you@example.com，不改的话登录会失败）
+# Edit ~/Library/LaunchAgents/com.user.weighin.plist and check four things:
+#   1. ProgramArguments: absolute paths to Python and scripts/watcher.py
+#   2. WorkingDirectory: the scripts/ directory
+#   3. EnvironmentVariables: replace you@example.com with your Garmin email
+#   4. StandardOutPath / StandardErrorPath: writable log paths
 
-# 加载并验证
+# Load and verify
 launchctl load ~/Library/LaunchAgents/com.user.weighin.plist
 launchctl list | grep weighin
 ```
 
-模板里的 `ProgramArguments`、`WorkingDirectory` 和日志路径仍是旧目录，必须按上面的四项修改后再加载。
+The template still contains old paths in `ProgramArguments`, `WorkingDirectory`, and the log settings. Update all four items before loading it.
 
-- `launchctl list` 应该显示 `- 0 com.user.weighin`。**如果显示 `- 78`，表示任务配置错误（EX_CONFIG），最常见的原因是 plist 里的路径和实际布局对不上**——例如 Python 或脚本路径写的是旧目录。先对着第 5 步的四项配置逐项核对，改完后 `unload` 再 `load` 才会生效。
-- 此后每 60 秒扫描一次；`Logs/weighin.log` 里会出现运行记录。
+- `launchctl list` should show `- 0 com.user.weighin`. A status of `- 78` means a configuration error (EX_CONFIG), most often because the paths in the plist do not match the real layout. Fix the four items, then `unload` and `load` again.
+- The watcher scans every 60 seconds; activity appears in `Logs/weighin.log`.
 
-### 第 6 步：建 iPhone 快捷指令
+### Step 6: Build the iPhone Shortcut
 
-#### 触发（二选一）
+#### Trigger (choose one)
 
-- 首选：ScaleMe 关闭时触发。注意触发那一刻手机必须已解锁，否则健康读不到。
-- 备选：早上闹钟停止时触发。
+- Preferred: run when ScaleMe closes. The phone must be unlocked at that moment because Health data is unavailable while locked.
+- Alternative: run when the morning alarm stops.
 
-#### 动作（按顺序）
+#### Actions (in order)
 
-1. **查找健康样本**：类型选“体重”，排序方式选“开始日期”、顺序选“最新的排最前”，限制打开、获取 1 项。
-2. **获取健康样本的详细信息** → 开始日期。
-3. **获取健康样本的详细信息** → 值。
-4. **格式化日期**：输入选第 2 步的开始日期，日期格式选自定义，填 `yyyy-MM-dd`。
-5. **文本**，拼成 JSON（用变量拼，不要手写死数字）：
+1. **Find Health Samples**: type `Weight` (体重), sort by `Start Date` (开始日期), newest first, limit 1.
+2. **Get Details of Health Sample** → Start Date.
+3. **Get Details of Health Sample** → Value.
+4. **Format Date**: input from step 2, custom format `yyyy-MM-dd`.
+5. **Text**, building JSON with variables (do not hard-code the numbers):
 
 ```json
 {"date":"2026-11-04","weight_kg":55.6}
 ```
 
-6. **保存文件**：把文本存到 `WeightIn`，询问保存位置**关**，如果文件存在则覆盖**开**，子路径填 `weighin-` + 第 4 步的日期 + `.json`。
+6. **Save File**: save the text to `WeightIn`, disable Ask Where To Save, enable Overwrite If File Exists, and set the subpath to `weighin-` + the formatted date from step 4 + `.json`.
 
-#### 可选：带上真实称重时间
+#### Optional: include the actual measurement time
 
-如果想让 Connect 显示真实称重时间而不是缺省 07:00，再加一步：
+To show the real measurement time instead of the 07:00 fallback, add:
 
-1. 再加一个**格式化日期**动作，输入同样选开始日期，格式选自定义，填 `yyyy-MM-dd'T'HH:mm:ssZZZZZ`。
-2. 文本改成：
+1. Another **Format Date** action using the same Start Date, with custom format `yyyy-MM-dd'T'HH:mm:ssZZZZZ`.
+2. Change the text to:
 
 ```json
 {"date":"2026-11-04","weight_kg":55.6,"measured_at":"2026-11-04T07:00:00+08:00"}
 ```
 
-#### iOS 快捷指令的几个坑（实测经验）
+#### Shortcut pitfalls
 
-- **保存文件会强制补 `.txt` 后缀**：新版 iOS 对文本输入保存时，即使子路径写的是 `.json`，实际落盘也常是 `weighin-2026-11-04.txt`。watcher 同时接受 `.json` 和 `.txt`，所以快捷指令侧不用改。
-- **两个格式化日期的输出重名**：第 4 步和“带时间”那步的输出都叫“格式化后的日期”。往文本里插变量时，排在后面的那个就是新加的（带时间的）；看文本预览区分：带 `T` 和 `+08:00` 的就是日期时间那个。
-- **变量选错**：新加动作时输入框可能自动填了上一步的输出；要点输入框的 token → 清除变量 → 重新选开始日期。
-- **文件名栏误设**：保存文件的“子路径/文件名”栏如果填成了 JSON 文本本身，会导致文件名就是一串 JSON、内容为空。文件名栏只填 `weighin-日期.json` 这种形式。
-- **健康权限**：快捷指令第一次读健康时会弹权限，必须允许；且触发时手机需已解锁。
+- **iOS may append `.txt`**: when saving text, iOS may produce `weighin-2026-11-04.txt` even if the subpath ends in `.json`. The watcher accepts both extensions.
+- **Two formatted dates have the same name**: the date-only action and the date-time action may both be named “Formatted Date.” The later action is the date-time value; verify that it contains `T` and the time-zone offset.
+- **Wrong input variable**: a newly added action may inherit the previous action's input. Clear the variable token and select Start Date again.
+- **Wrong filename field**: if the JSON text is placed in the filename field, the file is named after the JSON and its contents may be empty. Put JSON in the content field and use only `weighin-<date>.json` as the filename.
+- **Health permission**: allow Health access on first use, and keep the phone unlocked when the Shortcut runs.
 
-### 第 7 步：联调一次真实称重
+### Step 7: Test with a real weigh-in
 
-1. 实称一次（或触发一次快捷指令），确认 WeightIn 文件夹里出现当天的文件。
-2. 在 `ACTIVE_WINDOWS` 内等 1–2 分钟（iCloud 同步 + 60 秒文件龄 + 60 秒扫描周期）；窗口外需要等到下一处理时段。
-3. 查三处：
-   - Garmin Connect → 健康统计 → 体重，出现新记录；
-   - `Logs/weighin.log` 里出现 `uploaded …; source file deleted`；
-   - WeightIn 文件夹里的源文件已消失。
-4. 如果文件一直没删：看 `Logs/weighin.log` 的报错，对照[常见问题与排错](#常见问题与排错)。
+1. Weigh yourself, or run the Shortcut manually, and confirm that a file appears in `WeightIn`.
+2. Inside an active window, wait 1–2 minutes (iCloud sync + 60-second file age + 60-second scan interval). Outside a window, wait for the next active period.
+3. Check three places:
+   - Garmin Connect → Health Stats → Weight shows the new record.
+   - `Logs/weighin.log` contains `uploaded …; source file deleted`.
+   - The source file is gone from `WeightIn`.
+4. If the file remains, check `Logs/weighin.log` and use [Troubleshooting](#troubleshooting).
 
-### 第 8 步：日常使用
+### Step 8: Daily use
 
-- 此后什么都不用管：称重 → 关 ScaleMe → 记录自动进 Connect。
-- 换秤或换 App 时，只要新来源能把体重写进健康，链路其余部分不用动。
-- 想改处理时段，改 `watcher.py` 的 `ACTIVE_WINDOWS` 即可，launchd 不用重载（每次唤醒都会重新读脚本）。
+- After setup, no manual action is needed: weigh yourself, close ScaleMe, and the record reaches Connect automatically.
+- If you change scales or apps, the rest of the chain still works as long as the new source writes weight into Apple Health.
+- To change the processing windows, edit `ACTIVE_WINDOWS` in `watcher.py`; launchd does not need to be reloaded because it starts a new Python process each time.
 
-## 配置参考
+## Configuration
 
-### 环境变量
+### Environment variables
 
-| 变量 | 用途 | 设置位置 |
+| Variable | Purpose | Where to set it |
 | --- | --- | --- |
-| `GARMIN_EMAIL` | Garmin 登录邮箱 | `login_once.py` 运行时、plist 的 `EnvironmentVariables`、手动跑 watcher 时 |
-| `GARMIN_PASSWORD` | 仅手动调试用 | 不推荐设置；正常流程用 token，不用密码 |
-| `WEIGHIN_DIR` | 覆盖缺省的监听目录 | 手动跑 watcher 或 plist 的 `EnvironmentVariables` |
+| `GARMIN_EMAIL` | Garmin login email | When running `login_once.py`, in the plist's `EnvironmentVariables`, or when running the watcher manually |
+| `GARMIN_PASSWORD` | Manual debugging only | Not recommended; the normal flow uses cached tokens |
+| `WEIGHIN_DIR` | Override the watch folder | When running the watcher manually or in the plist's `EnvironmentVariables` |
 
-### watcher.py 常量
+### watcher.py constants
 
-| 常量 | 缺省值 | 说明 |
+| Constant | Default | Description |
 | --- | --- | --- |
-| `ACTIVE_WINDOWS` | `[(5, 0, 9, 0), (20, 0, 22, 0)]` | 处理时段；`None` = 全天 |
-| `MIN_AGE_S` | `60` | 文件未满这么多秒不处理 |
-| `DEDUP_TOL` | `0.05` | 去重容差（kg） |
-| `WATCH_DIR` | iCloud WeightIn 路径 | 可用 `WEIGHIN_DIR` 环境变量覆盖 |
-| `LOG_DIR` | 项目级 `Logs/` | 日志和账本目录，脚本自动创建 |
+| `ACTIVE_WINDOWS` | `[(5, 0, 9, 0), (20, 0, 22, 0)]` | Processing windows; `None` means all day |
+| `MIN_AGE_S` | `60` | Skip files younger than this many seconds |
+| `DEDUP_TOL` | `0.05` | Duplicate tolerance in kg |
+| `WATCH_DIR` | iCloud `WeightIn` path | Override with `WEIGHIN_DIR` |
+| `LOG_DIR` | Project-level `Logs/` | Log and ledger directory; created automatically |
 
-### 文件格式
+### File format
 
-快捷指令发来的 JSON，字段说明：
+JSON written by the Shortcut:
 
-| 字段 | 必填 | 说明 |
+| Field | Required | Description |
 | --- | --- | --- |
-| `date` | 是 | `YYYY-MM-DD` 格式的日期 |
-| `weight_kg` | 是 | 体重，数字或带单位的字符串（例如 `"55.6 kg"` 也能解析） |
-| `measured_at` | 否 | ISO 8601 时间；缺省按当天 07:00（+08:00）计，未带时区时按 UTC 处理 |
+| `date` | Yes | Date in `YYYY-MM-DD` format |
+| `weight_kg` | Yes | Weight as a number or a string with a unit, for example `"55.6 kg"` |
+| `measured_at` | No | ISO 8601 timestamp; defaults to 07:00 at UTC+08:00. A timestamp without a time zone is treated as UTC. |
 
-校验规则：日期必须是 10 位 `YYYY-MM-DD`，体重必须在 20–300 kg 之间，否则记 FAILED 并保留文件。
+Validation: the date must be a 10-character `YYYY-MM-DD` string and weight must be between 20 and 300 kg. Invalid input is logged as FAILED and the file is kept.
 
-## 仓库结构
+## How it works
+
+### End-to-end flow
 
 ```text
-.
-├── README.md                  # 项目总览
-├── AGENTS.md                  # 仓库协作与开发规则
-├── LICENSE                    # MIT 协议
-├── scripts/
-│   ├── watcher.py             # 常驻扫描脚本（核心）
-│   ├── fit_weight.py          # FIT 体重文件生成器（纯标准库）
-│   ├── login_once.py          # 一次性 Garmin 登录（种子 token）
-│   └── com.user.weighin.plist # launchd 任务模板（部署前修改路径和邮箱）
-├── docs/
-│   ├── index.md               # 文档索引
-│   ├── mac-setup.md           # Mac 端部署与排错（以此为准）
-│   └── shortcut-icloud.md     # iPhone 快捷指令说明
-├── Logs/                      # 运行期文件（本地生成，不提交）
-└── venv/                      # Python 虚拟环境（本地生成，不提交）
+Weight scale → ScaleMe App → Apple Health → iPhone Shortcut
+  → iCloud Drive/WeightIn (JSON content, usually a .json or .txt file)
+  → Mac watcher (launchd, scans every 60 seconds)
+  → Generate FIT file → Upload to Garmin Connect
+  → Delete the source file after the upload call returns successfully
+    (the deletion syncs back through iCloud and removes it from the phone)
 ```
 
-推荐部署使用 `scripts/` 下的 `watcher.py`、`fit_weight.py`、`login_once.py` 和 `com.user.weighin.plist`。`scale-sync-mac.zip` 是本机历史归档，已被 `.gitignore` 排除，不作为部署来源。
+### 1. Weight sync via FIT
 
-## 安全与隐私
+- Only **weight** is synchronized. FIT files can carry body fat, muscle mass, bone mass, and other fields, but this project sends weight only; see [Known limitations](#known-limitations).
+- `fit_weight.py` generates the FIT file using **only the Python standard library**. The file contains a `file_id` message (type = weight) and a single `weight_scale` message (timestamp + weight). It is about 63 bytes and stores weight at 0.01 kg precision.
+- The generated file was round-tripped through fitparse and successfully uploaded to a real Garmin account.
 
-- **密码永不存盘**：密码只在 `login_once.py` 运行时通过 getpass 输入一次，不写入任何文件、日志或代码。不要把密码写进 plist、脚本或环境变量文件。
-- **Token 文件权限**：`~/.garminconnect/garmin_tokens.json` 由库以 0600 权限保存（仅本人可读写）。不要把它发给别人或提交到公开仓库。
-- **数据去向**：体重数据只从你的 iPhone 经 iCloud 到你的 Mac，再由 Mac 直接上传到 Garmin，不经过任何第三方服务器。本项目没有服务端组件。
-- **公开仓库前检查清单**（提交前逐项确认）：
-  - [ ] 没有提交 `~/.garminconnect/` 下的任何文件
-  - [ ] 没有提交 `Logs/`（里面有你的体重记录和上传返回）
-  - [ ] plist 里的 `GARMIN_EMAIL` 是占位符，不是你的真实邮箱
-  - [ ] 没有提交 `__pycache__`、`.pyc`、个人路径或真实体重数据
-  - [ ] 确认 `.gitignore` 已排除：`Logs/`、`venv/`、`__pycache__/`、`*.pyc`、`.garminconnect/`、`scale-sync-mac.zip`
+### 2. Automatic triggering
 
-## 常见问题与排错
+- **On iPhone**: a Shortcut runs when ScaleMe is closed, or optionally when the morning alarm stops. It reads the latest weight from Apple Health and writes it as JSON to iCloud Drive.
+- **On Mac**: a launchd job wakes the watcher every 60 seconds, scans the iCloud folder, and processes new files.
+- After setup, no manual action is required: weigh yourself and close the app.
 
-### launchd 任务状态一直是 78（EX_CONFIG），日志为空
+### 3. Login and token management
 
-**原因**：任务配置错误，launchd 一次都没能把脚本拉起来。最常见的是 plist 里的路径和实际布局对不上（例如 Python 或脚本路径写的是旧目录）。
+- You only need to log in interactively **once** on the Mac. Run `login_once.py` and enter your Garmin password through `getpass`; the password is **never written to disk**. If MFA is enabled, the script also prompts for the one-time code.
+- After a successful login, the garminconnect library caches tokens in `~/.garminconnect/garmin_tokens.json` with file mode `0600`. The watcher then uploads without a password, and the library refreshes the tokens automatically.
+- **Important**: garminconnect 0.3.x only reads and writes tokens when `tokenstore` is passed explicitly. A bare `login()` succeeds only in memory and leaves nothing on disk; the watcher then fails with `Username and password are required`. Both scripts in this project pass `tokenstore` explicitly.
+- If the token becomes invalid, the watcher logs the failure and keeps the source file. Run `login_once.py` again and the next processing window will retry the upload automatically.
 
-**排查**：
+### 4. Upload mechanism
+
+- The preferred path is the garminconnect library's `upload_activity`. In 0.3.20 this API accepts a **file path string**, not raw bytes, and requires a FIT/TCX/GPX extension. The watcher therefore stages the FIT bytes in a temporary `.fit` file, uploads it, and removes the temporary file afterwards.
+- Fallback path: only when the client has no `upload_activity` method does the watcher POST the FIT directly to Garmin's upload-service endpoint using the cached access token. If `upload_activity` itself raises, the current round fails and the source file is kept; the fallback is not attempted automatically.
+
+### 5. Deduplication: the same weight on the same day is not uploaded twice
+
+- Deduplication is keyed by date. A file is treated as a duplicate when the date matches and the weight differs by less than 0.05 kg. The watcher tries to delete the duplicate without uploading it again.
+- **A different weight on the same day will be uploaded again** and will overwrite that date's entry in the local ledger. This is not a one-record-per-day rule; it is a one-record-per-weight-per-day rule.
+- **Deduplication uses the local ledger `Logs/uploaded.json`, not the contents of Garmin Connect.** If you delete a Garmin record but the ledger still contains that date and weight, the watcher treats the file as a duplicate and deletes it without uploading. To test again, clear the ledger as well.
+
+### 6. The source file is deleted only after the upload returns
+
+- The watcher records the date in the ledger and deletes the source file after the upload call returns without raising an exception.
+- The current code does not inspect `detailedImportResult.failures` in the Garmin response. If the service returns a normal response containing a processing failure, the watcher may still treat it as success. This is a known reliability gap.
+- Network errors, login errors, upload exceptions, and invalid file contents keep the source file, write a FAILED entry to the log, and retry in the next round. No data is intentionally discarded.
+- If the source file cannot be deleted after a successful upload (for example, because iCloud still holds a coordination lock), the ledger has already been written. The next round treats the file as a duplicate and retries deletion without uploading the same weight again.
+
+### 7. Active windows
+
+- `ACTIVE_WINDOWS` limits processing to specific periods, by default 5:00–9:00 and 20:00–22:00 local Mac time.
+- Each window is `(start_hour, start_minute, end_hour, end_minute)`. The end time is exclusive. Cross-midnight windows such as `(22, 0, 6, 0)` are supported.
+- Set it to `None` to run all day. Files that arrive outside a window are not lost; they are processed during the next window.
+- launchd still wakes the script every 60 seconds. The window check happens at the start of the script, so the plist does not need to change.
+
+### 8. File synchronization safeguards
+
+- Only files ending in `.json` or `.txt` are processed. New iOS versions may force a `.txt` extension when a Shortcut saves text, even when the subpath ends in `.json`, so both extensions are accepted.
+- iCloud `.icloud` placeholder files and all other extensions are skipped.
+- Files modified less than 60 seconds ago are skipped so that iCloud can finish syncing and the watcher does not read a partial file.
+
+### 9. Weight parsing tolerance
+
+- When a Shortcut inserts a Health quantity into text, iOS may include the unit, for example `55.6 kg` or `55.6千克`. The value in JSON may therefore be a string rather than a number.
+- The watcher extracts the first number from the string, so the Shortcut only needs to send `date` and `weight_kg`.
+
+### 10. Timestamp: actual time or the 07:00 fallback
+
+- If JSON contains `measured_at` (ISO 8601, for example `2026-11-04T07:00:00+08:00`), the watcher uses it as the measurement time. The FIT file stores UTC, and Garmin Connect displays it in the device's local time zone.
+- If `measured_at` is omitted, the watcher uses 07:00 on that date at UTC+08:00. This is a default assumption for morning weigh-ins. Garmin Connect converts it to the device's local time zone, so users in China usually see 07:00; this is not an upload failure.
+
+### 11. Logs and state files
+
+Runtime files live under the project-level `Logs/` directory and are kept out of the source tree:
+
+| File | Purpose |
+| --- | --- |
+| `Logs/weighin.log` | Watcher log: uploaded / FAILED / deduped / watch dir not found |
+| `Logs/weighin.err` | launchd stderr; with the documented setup, Python tracebacks appear here |
+| `Logs/uploaded.json` | Deduplication ledger: weight, upload time, and server response for each date |
+
+The watcher writes its log directly to a file and does not depend on launchd stdout. The current installation example points stdout to `/dev/null`; running the script manually still prints log lines to the terminal.
+
+## Troubleshooting
+
+### launchd status is 78 (EX_CONFIG) and the logs are empty
+
+**Cause**: launchd cannot start the job. The most common reason is a mismatch between the plist paths and the real layout.
+
+**Check**:
 
 ```bash
 cat ~/Library/LaunchAgents/com.user.weighin.plist
@@ -376,79 +345,118 @@ plutil -lint ~/Library/LaunchAgents/com.user.weighin.plist
 launchctl print gui/$(id -u)/com.user.weighin | head -40
 ```
 
-逐项核对 `ProgramArguments`（Python 路径、脚本路径）、`WorkingDirectory`、`GARMIN_EMAIL` 是否都是真实值。改完后必须 `unload` 再 `load` 才会生效；只改文件不重载，跑的还是旧配置。
+Verify `ProgramArguments` (Python and script paths), `WorkingDirectory`, the log paths, and `GARMIN_EMAIL`. After editing, `unload` and `load` the job again; launchd keeps using the old configuration until it is reloaded.
 
-### watcher 报 `Username and password are required`
+### The watcher reports `Username and password are required`
 
-**原因**：token 没存到磁盘。garminconnect 0.3.x 只有显式传了 `tokenstore` 才会存取 token，裸 `login()` 只在内存里成功。
+**Cause**: no token was saved to disk. garminconnect 0.3.x only loads and saves tokens when `tokenstore` is passed explicitly; a bare `login()` succeeds only in memory.
 
-**修复**：确认 `login_once.py` 和 `watcher.py` 都传了 `tokenstore="~/.garminconnect/garmin_tokens.json"`，然后重跑一次 `login_once.py`，再用 `ls -la ~/.garminconnect/` 确认 `garmin_tokens.json` 已生成（应为 0600 权限、非零大小）。
+**Fix**: confirm that both `login_once.py` and `watcher.py` pass `tokenstore="~/.garminconnect/garmin_tokens.json"`. Run `login_once.py` again, then check that `ls -la ~/.garminconnect/` shows a non-empty `garmin_tokens.json` with mode `0600`.
 
-### watcher 报 `upload_activity() takes 2 positional arguments but 3 were given`
+### The watcher reports `upload_activity() takes 2 positional arguments but 3 were given`
 
-**原因**：0.3.20 的 `upload_activity` 只收一个文件路径参数，不收字节流。本项目已修复：先把 FIT 写成临时 `.fit` 文件再传路径。
+**Cause**: garminconnect 0.3.20's `upload_activity` accepts one file path, not bytes. This project already stages the FIT bytes in a temporary `.fit` file.
 
-**修复**：确认你用的 `watcher.py` 是仓库最新版（里面有 `NamedTemporaryFile(suffix=".fit")` 那段）。
+**Fix**: make sure you are using the latest `watcher.py` from this repository, which contains `NamedTemporaryFile(suffix=".fit")`.
 
-### 文件一直在 WeightIn 里，迟迟不处理
+### Files stay in WeightIn and are not processed
 
-按顺序查：
+Check in order:
 
-1. **在不在时间窗口内**：`ACTIVE_WINDOWS` 之外的时间，脚本会直接退出，文件等到下一窗口才处理，这是正常的。
-2. **文件有没有真正下载到本地**：Finder 里文件如果带云下载图标，表示内容还在云端、本地只有占位。右键“立即下载”，或在系统设置 → Apple ID → iCloud → iCloud Drive 里关掉“优化 Mac 储存空间”，让文件常驻本地。
-3. **launchd 任务是不是好的**：`launchctl list | grep weighin`，状态应为 `0`；如果是 `78`，按上面那条排查。
-4. **文件是不是太新**：修改时间不到 60 秒的文件会跳过，等下一轮。
+1. **Is the current time inside an active window?** Outside `ACTIVE_WINDOWS`, the script exits immediately and waits for the next window. This is expected.
+2. **Has the file actually downloaded locally?** In Finder, a cloud-download icon means only a placeholder exists. Choose “Download Now,” or disable “Optimize Mac Storage” for iCloud Drive.
+3. **Is the launchd job healthy?** Run `launchctl list | grep weighin`; the exit status should be `0`. If it is `78`, follow the configuration section above.
+4. **Is the file still too new?** Files younger than 60 seconds are skipped until the next round.
 
-### 日志报 `[Errno 11] Resource deadlock avoided`
+### The log reports `[Errno 11] Resource deadlock avoided`
 
-**原因**：iCloud 文件仍被系统协调锁占用，watcher 在处理完成后无法删除源文件。若日志前面已经出现 `deduped` 或 `uploaded`，说明数据已处理，失败的是删除动作。
+**Cause**: iCloud still holds a coordination lock on the file, so the watcher cannot delete the source after processing. If `deduped` or `uploaded` appears earlier in the log, the data was processed and only the deletion failed.
 
-**处理**：等待 iCloud 同步完成后再观察下一轮；确认当天记录已在账本或 Connect 中后，可以手动删除残留文件。若反复出现，可先关闭“优化 Mac 储存空间”，让文件常驻本地后再试。
+**What to do**: wait for iCloud to finish syncing and observe the next round. Once the date is present in the ledger or Garmin Connect, you can remove the residual file manually. If this repeats, disable “Optimize Mac Storage” so the file stays local and try again.
 
-### 删了 Connect 里的同体重记录，重测还是不上传
+### I deleted the same-weight record in Connect, but it is not uploaded again
 
-**原因**：去重看的是本地账本 `Logs/uploaded.json`，不是 Connect 里的内容。删 Connect 记录不重置去重；只有同一天、同体重（差值小于 0.05 kg）的文件才会被拦截，体重不同会正常再次上传。
+**Cause**: deduplication uses the local ledger `Logs/uploaded.json`, not Garmin Connect. Deleting a Connect record does not reset the ledger. Only the same date and the same weight (within 0.05 kg) are blocked; a different weight is uploaded normally.
 
-**修复**：重测前连账本一起清：删 Connect 记录 + 删 `Logs/uploaded.json`（它会在下次上传成功时自动重建）。注意：正常使用时不要删账本，否则同一天会重复上传。
+**Fix**: to test again, delete the Connect record and remove `Logs/uploaded.json`. The ledger is recreated after the next successful upload. Do not delete it during normal use, or the same day's data may be uploaded more than once.
 
-### Connect 里显示的称重时间和实际称重时间不一致
+### The measurement time shown in Connect does not match the real time
 
-**原因**：快捷指令没发 `measured_at`，watcher 按缺省值当天 07:00（+08:00）计。Connect 按设备本地时区显示，所以在 +08 时区通常看到 07:00；这不是上传失败。
+**Cause**: the Shortcut omitted `measured_at`, so the watcher uses 07:00 at UTC+08:00. Connect displays the value in the device's local time zone, so users in UTC+08:00 usually see 07:00. This is not an upload failure.
 
-**修复**：按[第 6 步“带上真实称重时间”](#可选带上真实称重时间)给快捷指令加一个格式化日期动作。
+**Fix**: add the optional date-time formatting action described in [Step 6](#optional-include-the-actual-measurement-time).
 
-### 快捷指令生成的文件内容是空的，或文件名就是一串 JSON
+### The Shortcut creates an empty file or a file named after the JSON
 
-**原因**：保存文件动作的字段填错了——JSON 文本被填进了文件名栏，而不是内容栏。
+**Cause**: the Save File fields are filled in incorrectly: the JSON text is in the filename field instead of the content field.
 
-**修复**：内容栏放 JSON 文本，文件名栏只填 `weighin-日期.json` 这种形式；并确认“如果文件存在则覆盖”已打开。
+**Fix**: put the JSON in the content field and use only `weighin-<date>.json` as the filename. Confirm that overwrite is enabled.
 
-### 快捷指令读不到体重（值为空）
+### The Shortcut cannot read weight (the value is empty)
 
-**原因**：通常是健康权限没给，或健康里还没有新的体重记录（秤的 App 还没写进来）。
+**Cause**: Health permission is missing, or there is no new weight record in Health yet.
 
-**修复**：确认快捷指令的健康权限已允许；先实称一次、确认健康里出现新体重后，再触发快捷指令。
+**Fix**: allow Health access for the Shortcut, weigh yourself, confirm that the new value appears in Health, and run the Shortcut again.
 
-### token 失效
+### The token has expired
 
-**现象**：`Logs/weighin.log` 里出现登录失败，源文件被保留。
+**Symptom**: `Logs/weighin.log` shows a login failure and the source file is retained.
 
-**修复**：重跑一次 `login_once.py`（按提示输密码和双重验证码），下一轮自动补传，不用手动处理积压文件。
+**Fix**: run `login_once.py` again and enter the password and MFA code if prompted. The next processing window retries the queued files automatically.
 
-## 已知限制
+## Security and privacy
 
-- **只同步体重**：ScaleMe 只把体重写进健康，体脂写不进；所以本项目同步的只有体重，体脂、肌肉等指标不在覆盖范围。
-- **旧记录拿不回**：秤一旦把某条记录给过一个 App，就不再提供给其他 App。切换到 ScaleMe 之前的旧记录只能手动补录，本项目不做历史回补。
-- **依赖 iCloud 同步**：iPhone 和 Mac 之间的文件靠 iCloud Drive；同步延迟或未下载到本地都会延迟处理（文件本身不会丢）。
-- **依赖 Mac 在线**：Mac 必须在设定时段内开机在线；关机期间的文件会等到下次开机 + 窗口内才处理。
-- **依赖 ScaleMe 写健康**：如果 ScaleMe 变更行为（例如不再写健康），链路起点就会断，需要换一个能写健康的来源。
-- **Garmin 账号分区**：实测用国际区账号；中国区账号未测试。
-- **窗口外延迟**：窗口外到达的文件会延迟到下一窗口，这是有意设计，不是故障。
+- **Passwords are never stored**: `login_once.py` reads the password through `getpass` only at runtime. Do not put it in the plist, source files, or environment files.
+- **Token permissions**: `~/.garminconnect/garmin_tokens.json` is saved with mode `0600`. Never share or commit it.
+- **Data path**: weight data travels only from your iPhone through iCloud to your Mac, then directly to Garmin. There is no server component in this project.
+- **Checklist before publishing**:
+  - [ ] No files from `~/.garminconnect/` are committed.
+  - [ ] `Logs/` is not committed; it contains weight records and upload responses.
+  - [ ] The plist contains the `you@example.com` placeholder, not a real email.
+  - [ ] No `__pycache__`, `.pyc`, personal absolute paths, or real weight data are committed.
+  - [ ] `.gitignore` excludes `Logs/`, `venv/`, `__pycache__/`, `*.pyc`, `.garminconnect/`, and `scale-sync-mac.zip`.
 
-## 开源协议
+## Repository layout
 
-本项目采用 MIT 协议开源（见仓库根目录的 `LICENSE` 文件；如果你 fork 后想换协议，改 `LICENSE` 并同步更新本节即可）。
+```text
+.
+├── README.md                  # English README (default)
+├── README.zh-CN.md            # Chinese README
+├── AGENTS.md                  # Repository collaboration rules
+├── LICENSE                    # MIT license
+├── scripts/
+│   ├── watcher.py             # Main watcher
+│   ├── fit_weight.py          # FIT writer (standard library only)
+│   ├── login_once.py          # One-time Garmin login
+│   └── com.user.weighin.plist # launchd template (edit paths and email)
+├── docs/
+│   ├── index.md               # Documentation index
+│   ├── mac-setup.md           # Mac setup and troubleshooting
+│   └── shortcut-icloud.md     # iPhone Shortcut guide
+├── Logs/                      # Runtime files (local only, not committed)
+└── venv/                      # Python virtual environment (local only)
+```
+
+Deployment uses `watcher.py`, `fit_weight.py`, `login_once.py`, and `com.user.weighin.plist` from `scripts/`. `scale-sync-mac.zip` is a local historical archive, excluded by `.gitignore`, and is not a deployment source.
+
+## Known limitations
+
+- **Weight only**: ScaleMe writes weight but not body fat into Health, so body fat, muscle mass, and similar metrics are outside this project's scope.
+- **Historical records cannot be recovered**: once the scale has handed a record to one app, it may not expose it to another. Records from before switching to ScaleMe must be entered manually; this project does not backfill history.
+- **iCloud dependency**: files travel through iCloud Drive. Synchronization delays or files that are not downloaded locally delay processing, but the files are not lost.
+- **Mac availability**: the Mac must be powered on and online during an active window. Files wait until the Mac is available again.
+- **ScaleMe dependency**: if ScaleMe stops writing weight to Apple Health, the start of the chain breaks and a different Health-compatible source is needed.
+- **Account region**: tested with an international Garmin account; China-region accounts have not been tested.
+- **Window delays**: files that arrive outside an active window are deliberately delayed until the next window; this is not a failure.
+
+## License
+
+This project is open source under the MIT License and is hosted on GitHub:
+
+<https://github.com/elingsoft/GarminWeightSync4iCloud>
+
+See the [`LICENSE`](LICENSE) file for the full terms. Issues and pull requests are welcome. If you fork the project and change the license, update `LICENSE` and this section together.
 
 ---
 
-*实测环境：iPhone + ScaleMe + 蚂蚁阿福联名秤 → MacBook Pro（Apple Silicon，macOS）→ Garmin Connect 国际区。不同 iOS / macOS 版本的快捷指令与系统设置界面可能略有差异，请以你设备的实际界面为准。*
+*Tested with: iPhone + ScaleMe + Ant Afu co-branded scale → Apple Silicon MacBook Pro (macOS) → Garmin Connect international region. Shortcuts and System Settings UI may differ slightly between iOS and macOS versions; use the UI on your own device as the source of truth.*
