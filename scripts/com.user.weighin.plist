@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.weighin</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/elingsoft/weighin-venv/bin/python</string>
+        <string>/Users/elingsoft/weighin/watcher.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/elingsoft/weighin</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/elingsoft/Library/Logs/weighin.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/elingsoft/Library/Logs/weighin.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>GARMIN_EMAIL</key>
+        <string>you@example.com</string>
+    </dict>
+</dict>
+</plist>
