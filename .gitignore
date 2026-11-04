@@ -22,3 +22,4 @@ Logs/
 
 # Generated and local deployment artifacts
 scale-sync-mac.zip
+*.zip
